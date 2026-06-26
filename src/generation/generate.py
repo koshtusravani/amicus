@@ -6,6 +6,7 @@ latency per query and it's trivial to capture here but annoying to retrofit.
 from __future__ import annotations
 from dataclasses import dataclass, field
 import time
+import os
 
 from .. import config
 from ..retrieval.retriever import search, Candidate
@@ -39,7 +40,26 @@ class _Timer:
 
 
 def _call_llm(system: str, user: str) -> tuple[str, dict]:
-    # Open-source vs closed comparison (a stretch) plugs in here behind LLM_PROVIDER.
+    if config.LLM_PROVIDER == "gemini":
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+        resp = client.models.generate_content(
+            model=config.LLM_MODEL,
+            contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                temperature=config.LLM_TEMPERATURE,
+                max_output_tokens=config.LLM_MAX_TOKENS,
+            ),
+        )
+        usage = {
+            "input": resp.usage_metadata.prompt_token_count,
+            "output": resp.usage_metadata.candidates_token_count,
+        }
+        return resp.text, usage
+
     if config.LLM_PROVIDER == "anthropic":
         import anthropic
         client = anthropic.Anthropic()
@@ -53,8 +73,8 @@ def _call_llm(system: str, user: str) -> tuple[str, dict]:
         text = "".join(b.text for b in resp.content if b.type == "text")
         usage = {"input": resp.usage.input_tokens, "output": resp.usage.output_tokens}
         return text, usage
-    raise NotImplementedError(f"Provider {config.LLM_PROVIDER} not wired yet.")
 
+    raise NotImplementedError(f"Provider {config.LLM_PROVIDER} not wired yet.")
 
 def answer(question: str, where: dict | None = None) -> QueryTrace:
     trace = QueryTrace(question=question, answer="", sources=[])
