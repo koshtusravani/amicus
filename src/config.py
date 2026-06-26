@@ -46,11 +46,11 @@ LLM_TEMPERATURE = 0.0
 
 #Evaluation targets
 TARGETS = {
-    "precision_at_5": 0.70,
-    "recall_at_20": 0.80,
+    "recall_at_1": 0.70,
+    "recall_at_3": 0.90,
+    "recall_at_5": 0.90,
+    "recall_at_20": 0.95,
+    "mrr": 0.85,
     "faithfulness": 0.75,
-    "answer_relevancy": 0.80,
-    "context_precision": 0.70,
-    "context_recall": 0.80,
     "fabricated_citation_rate": 0.0,
 }
