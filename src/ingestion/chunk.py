@@ -32,35 +32,77 @@ class Chunk:
         return {k: v for k, v in d.items() if v is not None}
 
 
-def recursive_split(text: str, target_tokens: int, overlap: float) -> list[str]:
+def _ntokens(s: str) -> int:
+    return max(1, len(s.split()))
+
+
+def strip_boilerplate(text: str) -> str:
+    text = re.sub(r"\*\d+", " ", text)
+    text = re.sub(r"\bNo\.\s+\d+\.\s*", " ", text)
+    text = re.sub(r"\b(Argued|Decided|Reargued)\b[^.]*\.", " ", text)
+    return text
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.;:])\s+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _units(text: str) -> list[str]:
+    """Split into paragraphs, but fall back to sentences for any oversized block."""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paragraphs) <= 1:                      # no real paragraph breaks
+        paragraphs = _sentences(text)
+    units: list[str] = []
+    for p in paragraphs:
+        if _ntokens(p) > config.CHUNK_TOKENS:     
+            units.extend(_sentences(p))
+        else:
+            units.append(p)
+    return units
+
+
+def recursive_split(text: str, target_tokens: int, overlap: float) -> list[str]:
+    units = _units(text)
     chunks: list[str] = []
     buf: list[str] = []
     buf_len = 0
 
-    def _ntokens(s: str) -> int:
-        return max(1, len(s.split()))
-
-    for para in paragraphs:
-        plen = _ntokens(para)
-        if buf_len + plen > target_tokens and buf:
+    for unit in units:
+        ulen = _ntokens(unit)
+        if ulen > target_tokens:                  
+            words = unit.split()
+            for i in range(0, len(words), target_tokens):
+                chunks.append(" ".join(words[i : i + target_tokens]))
+            continue
+        if buf_len + ulen > target_tokens and buf:
             chunks.append("\n\n".join(buf))
             keep = max(1, int(len(buf) * overlap))
             buf = buf[-keep:]
             buf_len = sum(_ntokens(b) for b in buf)
-        buf.append(para)
-        buf_len += plen
+        buf.append(unit)
+        buf_len += ulen
 
     if buf:
         chunks.append("\n\n".join(buf))
-    return chunks
+
+    # Drop any exact duplicates that overlap can still produce on short texts.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in chunks:
+        key = c.strip()
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+    return unique
 
 
 def chunk_record(record: dict, target_tokens: int = config.CHUNK_TOKENS,
                  overlap: float = config.CHUNK_OVERLAP) -> list[Chunk]:
     chunks: list[Chunk] = []
     for op in record["opinions"]:
-        for i, piece in enumerate(recursive_split(op["text"], target_tokens, overlap)):
+        cleaned = strip_boilerplate(op["text"])
+        for i, piece in enumerate(recursive_split(cleaned, target_tokens, overlap)):
             chunks.append(Chunk(
                 text=piece,
                 case_name=record["case_name"],
