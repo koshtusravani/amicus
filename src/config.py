@@ -37,6 +37,7 @@ TOP_K = 50
 RERANK_K = 6
 RERANK_MODEL = "BAAI/bge-reranker-v2-m3"
 COLLECTION_NAME = "scotus_opinions"
+RERANK_INPUT = 10 
 
 #Generation
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic")

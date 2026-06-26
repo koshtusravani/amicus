@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import time
 import os
+import sys
+sys.stdout.reconfigure(encoding="utf-8")
 
 from .. import config
 from ..retrieval.retriever import search, Candidate
@@ -42,23 +44,36 @@ class _Timer:
 def _call_llm(system: str, user: str) -> tuple[str, dict]:
     if config.LLM_PROVIDER == "gemini":
         from google import genai
-        from google.genai import types
+        from google.genai import types, errors
 
         client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
-        resp = client.models.generate_content(
-            model=config.LLM_MODEL,
-            contents=user,
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=config.LLM_TEMPERATURE,
-                max_output_tokens=config.LLM_MAX_TOKENS,
-            ),
+        cfg = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=config.LLM_TEMPERATURE,
+            max_output_tokens=config.LLM_MAX_TOKENS,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         )
-        usage = {
-            "input": resp.usage_metadata.prompt_token_count,
-            "output": resp.usage_metadata.candidates_token_count,
-        }
-        return resp.text, usage
+        last_err = None
+        for attempt in range(5):
+            try:
+                resp = client.models.generate_content(
+                    model=config.LLM_MODEL, contents=user, config=cfg
+                )
+                usage = {
+                    "input": resp.usage_metadata.prompt_token_count,
+                    "output": resp.usage_metadata.candidates_token_count,
+                }
+                return resp.text, usage
+            except errors.ServerError as e:        # 503 / transient: back off and retry
+                last_err = e
+                time.sleep(2 ** attempt)
+            except errors.ClientError as e:        # 429 rate limit: back off and retry
+                if e.code == 429:
+                    last_err = e
+                    time.sleep(2 ** attempt)
+                else:
+                    raise
+        raise RuntimeError(f"Gemini unavailable after retries: {last_err}")
 
     if config.LLM_PROVIDER == "anthropic":
         import anthropic
@@ -82,7 +97,7 @@ def answer(question: str, where: dict | None = None) -> QueryTrace:
     with _Timer(trace.timings_ms, "retrieve"):
         candidates = search(question, where=where)
     with _Timer(trace.timings_ms, "rerank"):
-        top = rerank(question, candidates)
+        top = rerank(question, candidates[:config.RERANK_INPUT])
     trace.sources = top
 
     user_msg = build_user_message(question, top)
