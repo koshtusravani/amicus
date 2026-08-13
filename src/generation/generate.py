@@ -51,7 +51,7 @@ def _call_llm(system: str, user: str) -> tuple[str, dict]:
             system_instruction=system,
             temperature=config.LLM_TEMPERATURE,
             max_output_tokens=config.LLM_MAX_TOKENS,
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            thinking_config=types.ThinkingConfig(thinking_level="low"),
         )
         last_err = None
         for attempt in range(5):
