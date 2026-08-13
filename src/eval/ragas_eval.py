@@ -23,6 +23,7 @@ def fabricated_citation_rate(answer: str, known_citations: set[str]) -> float:
 
 
 def _normalize(cit: str) -> str:
+    cit = re.sub(r"\s*\(\d{4}\)\s*$", "", cit)  
     return re.sub(r"\s+", " ", cit).strip().lower()
 
 
@@ -37,3 +38,14 @@ def run_ragas(samples: list[dict]) -> dict:
         metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
     )
     return dict(result)
+
+def corpus_citations() -> set[str]:
+    """Every real citation string in the corpus, normalized, for fabrication checks."""
+    import json
+    from .. import config
+    cites: set[str] = set()
+    for path in config.RAW_DIR.glob("*.json"):
+        rec = json.loads(path.read_text(encoding="utf-8"))
+        if rec.get("citation"):
+            cites.add(_normalize(rec["citation"]))
+    return cites
