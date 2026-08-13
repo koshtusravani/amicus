@@ -25,7 +25,7 @@ Query (online):
 
 Evaluation (offline):
   labeled set -> run RAG and no-retrieval baseline
-  -> IR metrics + RAGAS + fabricated-citation rate -> results table
+  -> IR metrics + fabricated-citation rate -> results table
 ```
 
 ## Stack
@@ -36,9 +36,9 @@ Evaluation (offline):
 | Embeddings   | sentence-transformers (`BAAI/bge-large-en-v1.5`) |
 | Reranking    | cross-encoder (`BAAI/bge-reranker-v2-m3`)     |
 | Vector DB    | Chroma (local dev), Qdrant (deployment)       |
-| Generation   | closed LLM API, with an open-source comparison planned |
-| Evaluation   | RAGAS plus custom IR metrics                   |
-| Demo         | Gradio on Hugging Face Spaces                  |
+| Generation   | Gemini 3.5 Flash-Lite, with an open-source comparison planned |
+| Evaluation   | Custom IR metrics + fabricated-citation rate  |
+| Demo         | Gradio, runs locally                          |
 
 ## Chunking
 
@@ -49,36 +49,65 @@ which powers filtered retrieval and verifiable citations.
 
 ## Evaluation results
 
-Measured against a no-retrieval baseline (same LLM, same questions, no context).
+Measured on a 15-case labeled set, 15 retrieval queries. Generation eval on 10
+questions (8 answerable, 2 out-of-corpus negative controls), same LLM for
+baseline and RAG.
 
-| Metric                       | Target  | Baseline | RAG | RAG + rerank |
-|------------------------------|:-------:|:--------:|:---:|:------------:|
-| Precision@5                  | >= 0.70 | —        | —   | —            |
-| Recall@20                    | >= 0.80 | —        | —   | —            |
-| MRR                          | —       | —        | —   | —            |
-| nDCG@10                      | —       | —        | —   | —            |
-| Faithfulness (RAGAS)         | >= 0.75 | —        | —   | —            |
-| Answer relevancy (RAGAS)     | >= 0.80 | —        | —   | —            |
-| Context precision (RAGAS)    | >= 0.70 | n/a      | —   | —            |
-| Context recall (RAGAS)       | >= 0.80 | n/a      | —   | —            |
-| Fabricated-citation rate     | -> 0    | —        | —   | —            |
-| Correct-refusal rate         | high    | —        | —   | —            |
+### Retrieval
 
-I fill these in once the labeled set is built and the pipeline runs end to end.
-The fabricated-citation row is the headline: the baseline invents cases, the RAG
-system shouldn't.
+| Metric      | Vector search only | Vector + rerank |
+|-------------|:-------------------:|:----------------:|
+| Recall@1    | 0.700               | 0.767            |
+| Recall@3    | 0.833               | 0.967            |
+| Recall@5    | 0.833               | 0.967            |
+| Recall@20   | 0.967               | 0.967            |
+| MRR         | 0.819               | 0.900            |
+| nDCG@10     | 0.835               | 0.900            |
+
+Reranking meaningfully improves ranking quality — Recall@3 goes from 0.833 to
+0.967 and MRR from 0.819 to 0.900. Recall@20 tops out at 0.967 either way: one
+relevant case in the 15-case set isn't reliably surfaced even at a 20-chunk
+cutoff, a known retrieval gap rather than a ranking problem.
+
+### Generation
+
+| Metric                    | Baseline | RAG   |
+|---------------------------|:--------:|:-----:|
+| Fabricated-citation rate  | 0.930    | 0.000 |
+| Correct-refusal rate      | 0/2      | 2/2   |
+
+The baseline (same LLM, no retrieved context) invents a citation in nearly
+every answer. RAG, constrained to answer only from retrieved opinion text,
+fabricated zero citations across all 8 answerable questions and correctly
+refused both out-of-corpus questions.
 
 ## Cost and latency per query
 
-| Stage    | Latency (ms) | Tokens | Cost |
-|----------|:------------:|:------:|:----:|
-| Retrieve | —            | —      | —    |
-| Rerank   | —            | —      | —    |
-| Generate | —            | in/out | $    |
-| Total    | —            | —      | $    |
+Measured locally on CPU (no GPU), `RERANK_INPUT=20`, `gemini-3.5-flash-lite`
+($0.30/M input tokens, $2.50/M output tokens).
+
+| Stage    | Latency        | Notes                                      |
+|----------|:--------------:|---------------------------------------------|
+| Retrieve | ~200 ms        | Dense ANN search, bi-encoder query embed     |
+| Rerank   | 70–120 s       | Cross-encoder over 20 candidates, CPU-bound  |
+| Generate | 1.2–3.3 s      | Gemini 3.5 Flash-Lite                        |
+| **Total**| **~75–125 s**  | Dominated entirely by CPU reranking          |
+
+| Metric        | Value (representative query) |
+|---------------|:-----------------------------:|
+| Input tokens  | ~5,500                        |
+| Output tokens | ~175                          |
+| Est. cost     | ~$0.002 per query              |
+
+The reranking stage is the bottleneck by a wide margin — the cross-encoder
+(`bge-reranker-v2-m3`) scoring 20 (query, chunk) pairs on CPU costs roughly
+1,000x more time than retrieval or generation combined. On a GPU, this stage
+would drop to low hundreds of milliseconds; the current numbers reflect local
+development hardware, not a production deployment target. Generation cost is
+negligible either way — under half a cent per query.
 
 `QueryTrace` in `src/generation/generate.py` captures per-stage timings and
-token counts on every query; I populate this from a representative sample.
+token counts on every query.
 
 ## Setup
 
@@ -89,14 +118,23 @@ pip install -r requirements.txt
 python -m pytest -q
 ```
 
+## Running the demo
+
+```bash
+python app.py
+```
+
+Opens a local Gradio UI for asking questions against the corpus, with sources
+and per-query latency shown alongside each answer.
+
 ## Repo layout
 
 ```
 src/ingestion/   load, chunk, embed, index
 src/retrieval/   ANN search + cross-encoder rerank
 src/generation/  cite-or-refuse prompt + instrumented query path
-src/eval/        labeled set, IR metrics, baseline, RAGAS
-app/             Gradio demo
+src/eval/        labeled set, IR metrics, baseline, generation eval
+app.py           Gradio demo
 tests/           smoke tests
 ```
 
@@ -104,6 +142,7 @@ tests/           smoke tests
 
 - Hybrid search (dense + BM25) with score fusion
 - Open-source vs closed LLM comparison on the eval set
+- Ground-truth reference answers for context-precision/recall style metrics
 - Citation-graph features via CourtListener
 - BGE-M3 long-context vs short-context chunking
 - DeepEval in CI
